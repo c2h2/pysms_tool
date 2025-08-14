@@ -366,6 +366,10 @@ class SMSTool:
         if not self.serial_port:
             raise RuntimeError("Serial port not open")
         
+        # Debug output for sent command with blue background
+        if self.debug:
+            print(f"\033[44m[SEND] {command}\033[0m", file=sys.stderr)
+        
         self.serial_port.write((command + '\r\n').encode('utf-8'))
         
         response_lines = []
@@ -373,6 +377,11 @@ class SMSTool:
             line = self.serial_port.readline().decode(errors='ignore').strip()
             if not line:
                 continue
+            
+            # Debug output for received response with yellow background
+            if self.debug:
+                print(f"\033[43m[RECV] {line}\033[0m", file=sys.stderr)
+            
             if line in ('OK', 'ERROR') or line.startswith('+CMS ERROR:') or line.startswith('+CME ERROR:'):
                 response_lines.append(line)
                 break
@@ -390,6 +399,11 @@ class SMSTool:
                 line = self.serial_port.readline().decode(errors='ignore').strip()
                 if not line:
                     continue
+                
+                # Debug output for received response with yellow background
+                if self.debug:
+                    print(f"\033[43m[RECV] {line}\033[0m", file=sys.stderr)
+                
                 responses.append(line)
                 if line in ('OK', 'ERROR') or line.startswith('+CMS ERROR:') or line.startswith('+CME ERROR:'):
                     break
@@ -436,7 +450,10 @@ class SMSTool:
                 phone_ucs2 = ''.join(f'{ord(c):04X}' for c in phone)
                 
                 # Send CMGS command with UCS2 encoded phone number
-                self.serial_port.write(f'AT+CMGS="{phone_ucs2}"\r\n'.encode('utf-8'))
+                cmd = f'AT+CMGS="{phone_ucs2}"'
+                if self.debug:
+                    print(f"\033[44m[SEND] {cmd}\033[0m", file=sys.stderr)
+                self.serial_port.write((cmd + '\r\n').encode('utf-8'))
                 time.sleep(1)
                 
                 # Encode message to UCS2/UTF-16BE (handle emojis with surrogate pairs)
@@ -449,6 +466,8 @@ class SMSTool:
                     return False
                 
                 # Send UCS2 encoded message with Ctrl-Z
+                if self.debug:
+                    print(f"\033[44m[SEND] {message_ucs2}<CTRL-Z>\033[0m", file=sys.stderr)
                 self.serial_port.write((message_ucs2 + '\x1A').encode('utf-8'))
             else:
                 # Use text mode for ASCII messages
@@ -458,10 +477,15 @@ class SMSTool:
                 self._send_command('AT+CSCS="UTF-8"')
                 
                 # Send CMGS command with phone number
-                self.serial_port.write(f'AT+CMGS="{phone}"\r\n'.encode('utf-8'))
+                cmd = f'AT+CMGS="{phone}"'
+                if self.debug:
+                    print(f"\033[44m[SEND] {cmd}\033[0m", file=sys.stderr)
+                self.serial_port.write((cmd + '\r\n').encode('utf-8'))
                 time.sleep(1)
                 
                 # Send message with Ctrl-Z
+                if self.debug:
+                    print(f"\033[44m[SEND] {message}<CTRL-Z>\033[0m", file=sys.stderr)
                 self.serial_port.write((message + '\x1A').encode('utf-8'))
             
             responses = self._wait_for_response()
@@ -494,7 +518,10 @@ class SMSTool:
             self._send_command("AT+CMGF=0")
             
             # List all messages
-            self.serial_port.write("AT+CMGL=4\r\n".encode())
+            cmd = "AT+CMGL=4"
+            if self.debug:
+                print(f"\033[44m[SEND] {cmd}\033[0m", file=sys.stderr)
+            self.serial_port.write((cmd + "\r\n").encode())
             
             messages = []
             current_msg = None
@@ -567,7 +594,10 @@ class SMSTool:
                 print(f"Delete msg from {start_idx} to {end_idx}")
             
             for i in range(start_idx, end_idx + 1):
-                self.serial_port.write(f"AT+CMGD={i}\r\n".encode())
+                cmd = f"AT+CMGD={i}"
+                if self.debug:
+                    print(f"\033[44m[SEND] {cmd}\033[0m", file=sys.stderr)
+                self.serial_port.write((cmd + "\r\n").encode())
                 responses = self._wait_for_response()
                 
                 for response in responses:
@@ -592,7 +622,10 @@ class SMSTool:
                 self._send_command(f'AT+CPMS="{self.storage}"')
             
             # Query storage status
-            self.serial_port.write("AT+CPMS?\r\n".encode())
+            cmd = "AT+CPMS?"
+            if self.debug:
+                print(f"\033[44m[SEND] {cmd}\033[0m", file=sys.stderr)
+            self.serial_port.write((cmd + "\r\n").encode())
             responses = self._wait_for_response()
             
             for response in responses:
@@ -621,7 +654,7 @@ class SMSTool:
                 command = f'AT+CUSD=1,"{encoded_code}",15'
             
             if self.debug:
-                print(f"debug: {command}")
+                print(f"\033[44m[SEND] {command}\033[0m", file=sys.stderr)
             
             self.serial_port.write((command + '\r\n').encode('utf-8'))
             responses = self._wait_for_response(10)
@@ -649,6 +682,8 @@ class SMSTool:
         """Send raw AT command"""
         self._open_serial()
         try:
+            if self.debug:
+                print(f"\033[44m[SEND] {command}\033[0m", file=sys.stderr)
             self.serial_port.write((command + '\r\n').encode('utf-8'))
             responses = self._wait_for_response()
             

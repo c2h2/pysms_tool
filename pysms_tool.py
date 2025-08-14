@@ -83,68 +83,55 @@ class PDUDecoder:
         if len(text) > 160:
             raise ValueError("SMS message too long")
         
-        # Simple 7-bit encoding implementation
         output = bytearray()
+        carry = 0
         carry_bits = 0
-        carry_count = 0
         
-        for i, char in enumerate(text):
+        for char in text:
             char_code = ord(char) & 0x7F
             
-            if carry_count == 0:
-                output.append(char_code)
-                carry_bits = char_code >> 7
-                carry_count = 1
-            else:
-                byte_val = ((char_code << (8 - carry_count)) | carry_bits) & 0xFF
-                output.append(byte_val)
-                
-                carry_bits = char_code >> carry_count
-                carry_count += 1
-                
-                if carry_count == 8:
-                    if i < len(text) - 1:
-                        output.append(carry_bits & 0x7F)
-                    carry_count = 0
-                    carry_bits = 0
-        
-        if carry_count > 0 and carry_bits > 0:
-            output.append(carry_bits & 0x7F)
+            # Combine character with carry from previous iteration
+            byte_val = ((char_code << carry_bits) | carry) & 0xFF
+            output.append(byte_val)
+            
+            # Update carry for next iteration
+            carry = char_code >> (7 - carry_bits)
+            carry_bits += 1
+            
+            # If carry has accumulated 7 bits, it forms a complete character
+            if carry_bits == 7:
+                carry = 0
+                carry_bits = 0
             
         return bytes(output)
     
     @staticmethod
-    def decode_7bit(data: bytes, length: int = None) -> str:
+    def decode_7bit(data: bytes, length: int) -> str:
         """Decode GSM 7-bit encoded data"""
-        if length is None:
-            length = len(data) * 8 // 7
-            
         output = []
+        carry = 0
         carry_bits = 0
-        carry_count = 0
         
         for i, byte_val in enumerate(data):
-            if carry_count == 0:
-                output.append(chr(byte_val & 0x7F))
-                carry_bits = (byte_val & 0x80) >> 7
-                carry_count = 1
-            else:
-                char_code = ((byte_val << carry_count) | carry_bits) & 0x7F
-                output.append(chr(char_code))
-                
-                carry_bits = byte_val >> (7 - carry_count)
-                carry_count += 1
-                
-                if carry_count == 7:
-                    if len(output) < length:
-                        output.append(chr(carry_bits & 0x7F))
-                    carry_count = 0
-                    carry_bits = 0
-                    
             if len(output) >= length:
                 break
                 
-        return ''.join(output)
+            # Extract character from current byte and carry
+            char_val = ((byte_val << carry_bits) | carry) & 0x7F
+            output.append(chr(char_val))
+            
+            # Update carry for next iteration
+            carry = byte_val >> (7 - carry_bits)
+            carry_bits += 1
+            
+            # If we have enough carry bits for a full character
+            if carry_bits == 7:
+                if len(output) < length:
+                    output.append(chr(carry & 0x7F))
+                carry = 0
+                carry_bits = 0
+                
+        return ''.join(output[:length])
     
     @staticmethod
     def encode_phone_number(phone: str) -> bytes:
@@ -195,6 +182,106 @@ class PDUDecoder:
             phone = '+' + phone
             
         return phone, offset + 2 + num_bytes
+    
+    @staticmethod
+    def decode_timestamp(data: bytes, offset: int) -> Tuple[str, int]:
+        """Decode timestamp from PDU"""
+        timestamp_bytes = data[offset:offset + 7]
+        
+        # Each byte represents two digits in swapped format
+        year = PDUDecoder.swap_decimal_nibble(timestamp_bytes[0])
+        month = PDUDecoder.swap_decimal_nibble(timestamp_bytes[1])
+        day = PDUDecoder.swap_decimal_nibble(timestamp_bytes[2])
+        hour = PDUDecoder.swap_decimal_nibble(timestamp_bytes[3])
+        minute = PDUDecoder.swap_decimal_nibble(timestamp_bytes[4])
+        second = PDUDecoder.swap_decimal_nibble(timestamp_bytes[5])
+        
+        # Timezone is in quarters of an hour
+        tz_byte = timestamp_bytes[6]
+        tz_quarters = PDUDecoder.swap_decimal_nibble(tz_byte & 0x7F)
+        tz_sign = '-' if (tz_byte & 0x08) else '+'
+        
+        timestamp = f"20{year:02d}/{month:02d}/{day:02d} {hour:02d}:{minute:02d}:{second:02d} GMT{tz_sign}{tz_quarters//4:02d}:{(tz_quarters%4)*15:02d}"
+        
+        return timestamp, offset + 7
+    
+    @staticmethod
+    def decode_message_text(data: bytes, offset: int, length: int, dcs: int) -> str:
+        """Decode message text based on data coding scheme"""
+        if dcs == 0x00:
+            # GSM 7-bit encoding
+            return PDUDecoder.decode_7bit(data[offset:], length)
+        elif dcs == 0x08:
+            # UCS2 encoding (UTF-16BE)
+            try:
+                # Length is in bytes for UCS2
+                ucs2_data = data[offset:offset + length]
+                return ucs2_data.decode('utf-16be')
+            except UnicodeDecodeError:
+                return f"[UCS2 decode error: {data[offset:offset + length].hex()}]"
+        else:
+            # Unknown encoding
+            return f"[Unknown encoding DCS={dcs:02X}: {data[offset:offset + length].hex()}]"
+    
+    @staticmethod
+    def decode_pdu(pdu_hex: str) -> Dict[str, Any]:
+        """Decode a complete SMS PDU"""
+        try:
+            # Convert hex string to bytes
+            pdu = bytes.fromhex(pdu_hex)
+            offset = 0
+            
+            # SMSC length and number
+            smsc_len = pdu[offset]
+            offset += 1 + smsc_len
+            
+            # PDU type
+            pdu_type = pdu[offset]
+            offset += 1
+            
+            # Sender address
+            sender, offset = PDUDecoder.decode_phone_number(pdu, offset)
+            
+            # Protocol identifier
+            pid = pdu[offset]
+            offset += 1
+            
+            # Data coding scheme
+            dcs = pdu[offset]
+            offset += 1
+            
+            # Service center timestamp
+            timestamp, offset = PDUDecoder.decode_timestamp(pdu, offset)
+            
+            # User data length
+            udl = pdu[offset]
+            offset += 1
+            
+            # User data header (if present)
+            if pdu_type & 0x40:  # UDHI bit set
+                udhl = pdu[offset]
+                offset += 1 + udhl
+                udl -= udhl + 1
+            
+            # Message text
+            message = PDUDecoder.decode_message_text(pdu, offset, udl, dcs)
+            
+            return {
+                'sender': sender,
+                'timestamp': timestamp,
+                'message': message,
+                'pdu_type': pdu_type,
+                'dcs': dcs
+            }
+            
+        except Exception as e:
+            return {
+                'sender': '[Decode error]',
+                'timestamp': '[Decode error]',
+                'message': f'[PDU decode failed: {str(e)}]',
+                'pdu_type': 0,
+                'dcs': 0
+            }
     
     @staticmethod
     def encode_pdu(phone: str, message: str) -> str:
@@ -447,13 +534,17 @@ class SMSTool:
                     else:
                         print(msg['pdu'])
                 else:
-                    # Decode PDU (simplified - would need full PDU decoder)
+                    # Decode PDU
+                    decoded = PDUDecoder.decode_pdu(msg['pdu'])
                     if json_output:
-                        print('"sender":"","timestamp":"","content":"[PDU decoding not fully implemented]"}', end='')
+                        sender = decoded['sender'].replace('"', '\\"')
+                        timestamp = decoded['timestamp'].replace('"', '\\"')
+                        content = decoded['message'].replace('"', '\\"')
+                        print(f'"sender":"{sender}","timestamp":"{timestamp}","content":"{content}"}}', end='')
                     else:
-                        print("From: [PDU decoding not fully implemented]")
-                        print("Date/Time: [PDU decoding not fully implemented]")
-                        print("[PDU decoding not fully implemented]")
+                        print(f"From: {decoded['sender']}")
+                        print(f"Date/Time: {decoded['timestamp']}")
+                        print(decoded['message'])
                         print()
             
             if json_output:

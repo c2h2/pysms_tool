@@ -279,7 +279,7 @@ class SMSTool:
         if not self.serial_port:
             raise RuntimeError("Serial port not open")
         
-        self.serial_port.write((command + '\r\n').encode())
+        self.serial_port.write((command + '\r\n').encode('utf-8'))
         
         response_lines = []
         while True:
@@ -312,22 +312,70 @@ class SMSTool:
         return responses
     
     def send_sms(self, phone: str, message: str) -> bool:
-        """Send SMS message"""
-        if len(message) > 160:
-            print(f"SMS message too long: '{message}'", file=sys.stderr)
-            return False
+        """Send SMS message with Unicode support"""
+        # Check message length based on encoding
+        needs_unicode = any(ord(c) > 127 for c in message)
+        
+        if needs_unicode:
+            # For Unicode, check actual UTF-16BE byte count
+            try:
+                utf16_bytes = message.encode('utf-16be')
+                # SMS limit is 140 bytes for UCS2 (70 UTF-16 characters)
+                if len(utf16_bytes) > 140:
+                    print(f"SMS message too long: {len(utf16_bytes)} bytes (max 140 bytes for Unicode)", file=sys.stderr)
+                    return False
+            except UnicodeEncodeError:
+                print(f"Cannot encode message: {message}", file=sys.stderr)
+                return False
+        else:
+            # ASCII limit is 160 characters
+            if len(message) > 160:
+                print(f"SMS message too long: {len(message)} chars (max 160 for ASCII)", file=sys.stderr)
+                return False
         
         self._open_serial()
         try:
-            # Set text mode
-            self._send_command("AT+CMGF=1")
-            
-            # Send CMGS command with phone number
-            self.serial_port.write(f'AT+CMGS="{phone}"\r\n'.encode())
-            time.sleep(1)
-            
-            # Send message with Ctrl-Z
-            self.serial_port.write((message + '\x1A').encode())
+            if needs_unicode:
+                # Use text mode with UCS2 encoding for Unicode messages
+                self._send_command("AT+CMGF=1")
+                
+                # Set character set to UCS2
+                self._send_command('AT+CSCS="UCS2"')
+                
+                # Set SMS parameters for UCS2
+                self._send_command('AT+CSMP=17,167,0,25')
+                
+                # Encode phone number to UCS2
+                phone_ucs2 = ''.join(f'{ord(c):04X}' for c in phone)
+                
+                # Send CMGS command with UCS2 encoded phone number
+                self.serial_port.write(f'AT+CMGS="{phone_ucs2}"\r\n'.encode('utf-8'))
+                time.sleep(1)
+                
+                # Encode message to UCS2/UTF-16BE (handle emojis with surrogate pairs)
+                try:
+                    # Encode to UTF-16BE and convert to hex string
+                    utf16_bytes = message.encode('utf-16be')
+                    message_ucs2 = utf16_bytes.hex().upper()
+                except UnicodeEncodeError:
+                    print(f"Cannot encode message to UCS2: {message}", file=sys.stderr)
+                    return False
+                
+                # Send UCS2 encoded message with Ctrl-Z
+                self.serial_port.write((message_ucs2 + '\x1A').encode('utf-8'))
+            else:
+                # Use text mode for ASCII messages
+                self._send_command("AT+CMGF=1")
+                
+                # Set character set to UTF-8
+                self._send_command('AT+CSCS="UTF-8"')
+                
+                # Send CMGS command with phone number
+                self.serial_port.write(f'AT+CMGS="{phone}"\r\n'.encode('utf-8'))
+                time.sleep(1)
+                
+                # Send message with Ctrl-Z
+                self.serial_port.write((message + '\x1A').encode('utf-8'))
             
             responses = self._wait_for_response()
             
@@ -484,7 +532,7 @@ class SMSTool:
             if self.debug:
                 print(f"debug: {command}")
             
-            self.serial_port.write((command + '\r\n').encode())
+            self.serial_port.write((command + '\r\n').encode('utf-8'))
             responses = self._wait_for_response(10)
             
             for response in responses:
@@ -510,7 +558,7 @@ class SMSTool:
         """Send raw AT command"""
         self._open_serial()
         try:
-            self.serial_port.write((command + '\r\n').encode())
+            self.serial_port.write((command + '\r\n').encode('utf-8'))
             responses = self._wait_for_response()
             
             for response in responses:

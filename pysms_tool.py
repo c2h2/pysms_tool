@@ -262,21 +262,55 @@ class PDUDecoder:
             offset += 1
             
             # User data header (if present)
+            reference = None
+            part = None
+            total = None
+            
             if pdu_type & 0x40:  # UDHI bit set
                 udhl = pdu[offset]
-                offset += 1 + udhl
+                offset += 1
+                udh_start = offset
+                udh_end = offset + udhl
+                
+                # Parse User Data Header
+                while offset < udh_end:
+                    ie_id = pdu[offset]
+                    ie_len = pdu[offset + 1]
+                    ie_data = pdu[offset + 2:offset + 2 + ie_len]
+                    
+                    if ie_id == 0x00 and ie_len == 3:  # Concatenated SMS header
+                        reference = ie_data[0]
+                        total = ie_data[1]
+                        part = ie_data[2]
+                    elif ie_id == 0x08 and ie_len == 4:  # Concatenated SMS 16-bit reference
+                        reference = (ie_data[0] << 8) | ie_data[1]
+                        total = ie_data[2]
+                        part = ie_data[3]
+                    
+                    offset += 2 + ie_len
+                
                 udl -= udhl + 1
             
             # Message text
             message = PDUDecoder.decode_message_text(pdu, offset, udl, dcs)
             
-            return {
+            result = {
                 'sender': sender,
                 'timestamp': timestamp,
                 'message': message,
                 'pdu_type': pdu_type,
                 'dcs': dcs
             }
+            
+            # Add multipart SMS fields if present
+            if reference is not None:
+                result['reference'] = reference
+            if part is not None:
+                result['part'] = part
+            if total is not None:
+                result['total'] = total
+            
+            return result
             
         except Exception as e:
             return {
@@ -571,7 +605,18 @@ class SMSTool:
                         sender = decoded['sender'].replace('"', '\\"')
                         timestamp = decoded['timestamp'].replace('"', '\\"')
                         content = decoded['message'].replace('"', '\\"')
-                        print(f'"sender":"{sender}","timestamp":"{timestamp}","content":"{content}"}}', end='')
+                        
+                        json_fields = [f'"sender":"{sender}"', f'"timestamp":"{timestamp}"', f'"content":"{content}"']
+                        
+                        # Add multipart SMS fields if present
+                        if 'reference' in decoded:
+                            json_fields.append(f'"reference":{decoded["reference"]}')
+                        if 'part' in decoded:
+                            json_fields.append(f'"part":{decoded["part"]}')
+                        if 'total' in decoded:
+                            json_fields.append(f'"total":{decoded["total"]}')
+                        
+                        print(','.join(json_fields) + '}', end='')
                     else:
                         print(f"From: {decoded['sender']}")
                         print(f"Date/Time: {decoded['timestamp']}")

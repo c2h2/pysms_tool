@@ -24,6 +24,7 @@ COMMANDS:
     status                  Show modem storage status
     ussd <code>            Send USSD code (e.g., *100# for balance)
     at <command>           Send raw AT command to modem
+    reset                  Factory reset RM520N-GL modem
 
 OPTIONS:
     -b, --baudrate <rate>      Serial baudrate (default: 115200)
@@ -50,6 +51,9 @@ EXAMPLES:
     
     # Delete all messages
     python3 sms_tool_python.py -d /dev/ttyUSB2 delete all
+    
+    # Reset modem to factory settings
+    python3 sms_tool_python.py -d /dev/ttyUSB2 reset
 """
 
 import argparse
@@ -321,12 +325,14 @@ class SMSTool:
     """Main SMS tool class"""
     
     def __init__(self, device: str = "/dev/ttyUSB0", baudrate: int = 115200, 
-                 debug: bool = False, storage: str = "", dateformat: str = "%m/%d/%y %H:%M:%S"):
+                 debug: bool = False, storage: str = "", dateformat: str = "%m/%d/%y %H:%M:%S",
+                 gsm_mode: bool = False):
         self.device = device
         self.baudrate = baudrate
         self.debug = debug
         self.storage = storage
         self.dateformat = dateformat
+        self.gsm_mode = gsm_mode
         self.serial_port: Optional[serial.Serial] = None
         
         # Set up signal handler for timeout
@@ -413,33 +419,49 @@ class SMSTool:
         return responses
     
     def send_sms(self, phone: str, message: str) -> bool:
-        """Send SMS message with Unicode support"""
-        # Check message length based on encoding
-        needs_unicode = any(ord(c) > 127 for c in message)
-        
-        if needs_unicode:
-            # For Unicode, check actual UTF-16BE byte count
+        """Send SMS message using UCS2 or GSM encoding"""
+        if self.gsm_mode:
+            # GSM mode - ASCII only, 160 character limit
+            if len(message) > 160:
+                print(f"SMS message too long: {len(message)} chars (max 160 for GSM)", file=sys.stderr)
+                return False
+            
+            # Check for non-ASCII characters
+            if any(ord(c) > 127 for c in message):
+                print("Warning: Non-ASCII characters detected in GSM mode, may not display correctly", file=sys.stderr)
+        else:
+            # UCS2 mode - check message length for UCS2 encoding
             try:
                 utf16_bytes = message.encode('utf-16be')
                 # SMS limit is 140 bytes for UCS2 (70 UTF-16 characters)
                 if len(utf16_bytes) > 140:
-                    print(f"SMS message too long: {len(utf16_bytes)} bytes (max 140 bytes for Unicode)", file=sys.stderr)
+                    print(f"SMS message too long: {len(utf16_bytes)} bytes (max 140 bytes for UCS2)", file=sys.stderr)
                     return False
             except UnicodeEncodeError:
                 print(f"Cannot encode message: {message}", file=sys.stderr)
                 return False
-        else:
-            # ASCII limit is 160 characters
-            if len(message) > 160:
-                print(f"SMS message too long: {len(message)} chars (max 160 for ASCII)", file=sys.stderr)
-                return False
         
         self._open_serial()
         try:
-            if needs_unicode:
-                # Use text mode with UCS2 encoding for Unicode messages
-                self._send_command("AT+CMGF=1")
+            # Use text mode
+            self._send_command("AT+CMGF=1")
+            
+            if self.gsm_mode:
+                # Set character set to GSM
+                self._send_command('AT+CSCS="GSM"')
                 
+                # Send CMGS command with phone number
+                cmd = f'AT+CMGS="{phone}"'
+                if self.debug:
+                    print(f"\033[44m[SEND] {cmd}\033[0m", file=sys.stderr)
+                self.serial_port.write((cmd + '\r\n').encode('utf-8'))
+                time.sleep(1)
+                
+                # Send message with Ctrl-Z
+                if self.debug:
+                    print(f"\033[44m[SEND] {message}<CTRL-Z>\033[0m", file=sys.stderr)
+                self.serial_port.write((message + '\x1A').encode('utf-8'))
+            else:
                 # Set character set to UCS2
                 self._send_command('AT+CSCS="UCS2"')
                 
@@ -469,24 +491,6 @@ class SMSTool:
                 if self.debug:
                     print(f"\033[44m[SEND] {message_ucs2}<CTRL-Z>\033[0m", file=sys.stderr)
                 self.serial_port.write((message_ucs2 + '\x1A').encode('utf-8'))
-            else:
-                # Use text mode for ASCII messages
-                self._send_command("AT+CMGF=1")
-                
-                # Set character set to UTF-8
-                self._send_command('AT+CSCS="UTF-8"')
-                
-                # Send CMGS command with phone number
-                cmd = f'AT+CMGS="{phone}"'
-                if self.debug:
-                    print(f"\033[44m[SEND] {cmd}\033[0m", file=sys.stderr)
-                self.serial_port.write((cmd + '\r\n').encode('utf-8'))
-                time.sleep(1)
-                
-                # Send message with Ctrl-Z
-                if self.debug:
-                    print(f"\033[44m[SEND] {message}<CTRL-Z>\033[0m", file=sys.stderr)
-                self.serial_port.write((message + '\x1A').encode('utf-8'))
             
             responses = self._wait_for_response()
             
@@ -703,6 +707,33 @@ class SMSTool:
             
         finally:
             self._close_serial()
+    
+    def reset_modem(self) -> bool:
+        """Reset RM520N-GL modem to factory settings"""
+        self._open_serial()
+        try:
+            # Send factory reset command for RM520N-GL
+            cmd = 'AT+QCFG="ResetFactory"'
+            if self.debug:
+                print(f"\033[44m[SEND] {cmd}\033[0m", file=sys.stderr)
+            self.serial_port.write((cmd + '\r\n').encode('utf-8'))
+            responses = self._wait_for_response(30)  # Longer timeout for reset
+            
+            for response in responses:
+                if response == 'OK':
+                    print("Modem reset successful")
+                    return True
+                elif response in ('ERROR', 'COMMAND NOT SUPPORT') or response.startswith('+CME ERROR:'):
+                    print(f"Modem reset failed: {response}", file=sys.stderr)
+                    return False
+                else:
+                    if self.debug:
+                        print(response)
+            
+            return False
+            
+        finally:
+            self._close_serial()
 
 
 def main():
@@ -711,12 +742,13 @@ def main():
     parser.add_argument('-d', '--device', default='/dev/ttyUSB0', help='TTY device (default: /dev/ttyUSB0)')
     parser.add_argument('-D', '--debug', action='store_true', help='Debug mode')
     parser.add_argument('-f', '--dateformat', default='%m/%d/%y %H:%M:%S', help='Date/time format')
+    parser.add_argument('-G', '--gsm-mode', action='store_true', help='Use GSM character set instead of UCS2')
     parser.add_argument('-j', '--json', action='store_true', help='JSON output')
     parser.add_argument('-R', '--raw-input', action='store_true', help='Use raw input')
     parser.add_argument('-r', '--raw-output', action='store_true', help='Use raw output')
     parser.add_argument('-s', '--storage', default='', help='Preferred storage')
     
-    parser.add_argument('command', help='Command: send, recv, delete, status, ussd, at')
+    parser.add_argument('command', help='Command: send, recv, delete, status, ussd, at, reset')
     parser.add_argument('args', nargs='*', help='Command arguments')
     
     args = parser.parse_args()
@@ -738,7 +770,8 @@ def main():
         baudrate=args.baudrate,
         debug=args.debug,
         storage=args.storage,
-        dateformat=args.dateformat
+        dateformat=args.dateformat,
+        gsm_mode=args.gsm_mode
     )
     
     # Execute command
@@ -756,6 +789,8 @@ def main():
             success = sms_tool.send_ussd(args.args[0], args.raw_input, args.raw_output)
         elif args.command == 'at':
             success = sms_tool.send_at_command(args.args[0])
+        elif args.command == 'reset':
+            success = sms_tool.reset_modem()
         else:
             parser.error(f'Unknown command: {args.command}')
         

@@ -957,24 +957,54 @@ class SMSTool:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='SMS Tool for 3G/4G/5G modem - Python version')
-    parser.add_argument('-b', '--baudrate', type=int, default=115200, help='Baudrate (default: 115200)')
-    parser.add_argument('-d', '--device', default='/dev/ttyUSB0', help='TTY device (default: /dev/ttyUSB0)')
-    parser.add_argument('-D', '--debug', action='store_true', help='Debug mode')
-    parser.add_argument('-f', '--dateformat', default='%m/%d/%y %H:%M:%S', help='Date/time format')
-    parser.add_argument('-G', '--gsm-mode', action='store_true', help='Use GSM character set instead of UCS2')
-    parser.add_argument('-j', '--json', action='store_true', help='JSON output')
-    parser.add_argument('-R', '--raw-input', action='store_true', help='Use raw input')
-    parser.add_argument('-r', '--raw-output', action='store_true', help='Use raw output')
-    parser.add_argument('-s', '--storage', default='', help='Preferred storage')
-    parser.add_argument('-A', '--assemble', action='store_true', help='Assemble multipart SMS messages')
-    parser.add_argument('--delete-after', action='store_true', help='Delete messages after fetching')
-    parser.add_argument('--all-storage', action='store_true', help='Fetch from both SIM (SM) and modem (ME) storage')
+    parser = argparse.ArgumentParser(
+        add_help=False,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        usage='''%(prog)s [options] send phoneNumber message
+       %(prog)s [options] recv
+       %(prog)s [options] delete msg_index | all
+       %(prog)s [options] status
+       %(prog)s [options] ussd code
+       %(prog)s [options] at command
+       %(prog)s [options] reset
+options:
+        -b <baudrate> (default: 115200)
+        -d <tty device> (default: /dev/ttyUSB0)
+        -D debug (for ussd and at)
+        -f <date/time format> (for sms/recv)
+        -j json output (for sms/recv)
+        -R use raw input (for ussd)
+        -r use raw output (for ussd and sms/recv)
+        -s <preferred storage> (for sms/recv/status)
+        -A assemble multipart SMS messages
+        -G use GSM character set instead of UCS2
+        --delete-after delete messages after fetching
+        --all-storage fetch from both SIM and modem storage
+        -h, --help show this help message''')
     
-    parser.add_argument('command', help='Command: send, recv, delete, status, ussd, at, reset')
-    parser.add_argument('args', nargs='*', help='Command arguments')
+    parser.add_argument('-b', '--baudrate', type=int, default=115200, help=argparse.SUPPRESS)
+    parser.add_argument('-d', '--device', default='/dev/ttyUSB0', help=argparse.SUPPRESS)
+    parser.add_argument('-D', '--debug', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('-f', '--dateformat', default='%m/%d/%y %H:%M:%S', help=argparse.SUPPRESS)
+    parser.add_argument('-G', '--gsm-mode', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('-j', '--json', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('-R', '--raw-input', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('-r', '--raw-output', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('-s', '--storage', default='', help=argparse.SUPPRESS)
+    parser.add_argument('-A', '--assemble', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--delete-after', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--all-storage', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('-h', '--help', action='help', help=argparse.SUPPRESS)
+    
+    parser.add_argument('command', nargs='?', help=argparse.SUPPRESS)
+    parser.add_argument('args', nargs='*', help=argparse.SUPPRESS)
     
     args = parser.parse_args()
+    
+    # Show help if no command provided
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
     
     # Validate command and arguments
     if args.command == 'send':

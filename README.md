@@ -26,11 +26,7 @@ pip install pyserial
 ```
 
 ### Download
-```bash
-git clone https://git.g77k.com/yiling.cao/pysms_tool.git
-cd pysms_tool
-chmod +x pysms_tool.py demo.py private_key_enable.sh
-```
+Clone this repo.
 
 ## Quick Start
 

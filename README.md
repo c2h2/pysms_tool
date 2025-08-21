@@ -1,93 +1,271 @@
-# pysms_tool
+# Python SMS Tool for 3G/4G/5G Modems
 
+A comprehensive Python implementation of SMS functionality for 3G/4G/5G modems, with special support for RM520N-GL modems.
 
+## Features
 
-## Getting started
-
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
-
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
-
-```
-cd existing_repo
-git remote add origin https://git.g77k.com/yiling.cao/pysms_tool.git
-git branch -M main
-git push -uf origin main
-```
-
-## Integrate with your tools
-
-- [ ] [Set up project integrations](https://git.g77k.com/yiling.cao/pysms_tool/-/settings/integrations)
-
-## Collaborate with your team
-
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/ee/user/project/merge_requests/merge_when_pipeline_succeeds.html)
-
-## Test and Deploy
-
-Use the built-in continuous integration in GitLab.
-
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/index.html)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
-
-***
-
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+- ✅ **Send SMS messages** with Unicode/emoji/Chinese/CJK support
+- ✅ **Receive and decode SMS messages** from SIM and modem storage
+- ✅ **Multipart SMS support** with automatic assembly
+- ✅ **Delete SMS messages** individually or in bulk
+- ✅ **USSD queries** for balance checks and service codes
+- ✅ **Modem reset** functionality for RM520N-GL
+- ✅ **Raw AT command** interface for debugging
+- ✅ **JSON output** format for integration
+- ✅ **Multiple storage support** (SIM card and modem memory)
+- ✅ **Auto-delete after fetch** option
 
 ## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+### Requirements
+- Python 3.6+
+- `pyserial` library
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+```bash
+pip install pyserial
+```
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+### Download
+```bash
+git clone https://git.g77k.com/yiling.cao/pysms_tool.git
+cd pysms_tool
+chmod +x pysms_tool.py demo.py private_key_enable.sh
+```
+
+## Quick Start
+
+### Command Line Usage
+
+```bash
+# Send SMS (supports Chinese, emoji, and all Unicode)
+python3 pysms_tool.py -d /dev/ttyUSB2 send "+1234567890" "Hello World! 你好世界 🌍"
+
+# Receive messages
+python3 pysms_tool.py -d /dev/ttyUSB2 recv
+
+# Receive with multipart assembly
+python3 pysms_tool.py -d /dev/ttyUSB2 -A recv
+
+# Get JSON output
+python3 pysms_tool.py -d /dev/ttyUSB2 -j recv
+
+# Check balance via USSD
+python3 pysms_tool.py -d /dev/ttyUSB2 ussd "*100#"
+
+# Reset modem (RM520N-GL)
+python3 pysms_tool.py -d /dev/ttyUSB2 reset
+```
+
+### Python Module Usage
+
+```python
+from pysms_tool import SMSTool
+
+# Create SMS tool instance
+sms = SMSTool(device="/dev/ttyUSB2", debug=True)
+
+# Send SMS
+sms.send_sms("+1234567890", "Hello from Python!")
+
+# Get all messages from both SIM and modem storage
+messages = sms.get_all_messages(storage_types=["SM", "ME"])
+
+for msg in messages:
+    decoded = msg['decoded']
+    print(f"From: {decoded['sender']}")
+    print(f"Message: {decoded['message']}")
+    if 'reference' in decoded:
+        print(f"Part {decoded['part']}/{decoded['total']}")
+
+# Reset modem
+sms.reset_modem()
+```
+
+## Command Line Options
+
+| Option | Description |
+|--------|-------------|
+| `-d, --device` | TTY device path (default: /dev/ttyUSB0) |
+| `-b, --baudrate` | Serial baudrate (default: 115200) |
+| `-D, --debug` | Enable debug mode |
+| `-j, --json` | JSON output format |
+| `-A, --assemble` | Assemble multipart SMS messages |
+| `--all-storage` | Fetch from both SIM (SM) and modem (ME) storage |
+| `--delete-after` | Delete messages after fetching |
+| `-r, --raw-output` | Raw PDU output |
+| `-s, --storage` | Preferred storage (SM/ME/MT) |
+
+## Commands
+
+| Command | Description | Examples |
+|---------|-------------|----------|
+| `send` | Send SMS to phone number | `send "+1234567890" "Hello"` |
+| `recv` | Receive SMS messages | `recv` |
+| `delete` | Delete SMS by index or all | `delete 5` or `delete all` |
+| `status` | Show modem storage status | `status` |
+| `ussd` | Send USSD code | `ussd "*100#"` |
+| `at` | Send raw AT command | `at "AT+CIMI"` |
+| `reset` | Factory reset RM520N-GL modem | `reset` |
+
+## Advanced Examples
+
+### Multipart SMS Assembly
+```bash
+# Regular receive (shows individual parts)
+python3 pysms_tool.py -d /dev/ttyUSB2 -j recv
+
+# Assembled receive (combines parts into complete messages)
+python3 pysms_tool.py -d /dev/ttyUSB2 -A -j recv
+```
+
+### Fetch and Delete
+```bash
+# Fetch from all storage and delete after reading
+python3 pysms_tool.py -d /dev/ttyUSB2 --all-storage --delete-after recv
+```
+
+### Integration Example
+```bash
+# Get messages in JSON, assemble multipart, and pipe to another tool
+python3 pysms_tool.py -d /dev/ttyUSB2 -A -j recv | jq '.msg[] | select(.type=="multipart")'
+```
+
+## Demo Script
+
+Run the interactive demo to explore features:
+
+```bash
+# Interactive menu
+python3 demo.py interactive
+
+# Quick demos
+python3 demo.py basic
+python3 demo.py send "+1234567890" "Test message"
+python3 demo.py ussd "*100#"
+```
+
+## API Reference
+
+### SMSTool Class
+
+#### Constructor
+```python
+SMSTool(device="/dev/ttyUSB0", baudrate=115200, debug=False, storage="", dateformat="%m/%d/%y %H:%M:%S", gsm_mode=False)
+```
+
+#### Methods
+
+**send_sms(phone: str, message: str) -> bool**
+- Send SMS to specified phone number
+- Supports Unicode/emoji/Chinese/CJK characters via UCS2 encoding
+
+**get_all_messages(storage_types: List[str] = None, delete_after: bool = False) -> List[Dict]**
+- Get decoded messages from specified storage types
+- Returns list of message dictionaries with decoded content
+
+**receive_sms(json_output: bool = False, raw_output: bool = False, storage_types: List[str] = None, delete_after: bool = False) -> bool**
+- Print received messages to stdout
+- Supports JSON and raw PDU output formats
+
+**receive_sms_assembled(json_output: bool = False, storage_types: List[str] = None, delete_after: bool = False) -> bool**
+- Print received messages with multipart SMS assembled
+- Groups message parts by sender and reference number
+
+**reset_modem() -> bool**
+- Factory reset RM520N-GL modem
+- Sends AT+QCFG="ResetFactory" command
+
+**send_ussd(code: str, raw_input: bool = False, raw_output: bool = False) -> bool**
+- Send USSD code for service queries
+
+**delete_sms(index: str) -> bool**
+- Delete SMS by index number or "all"
+
+**get_status() -> bool**
+- Display SMS storage status
+
+**send_at_command(command: str) -> bool**
+- Send raw AT command to modem
+
+## Message Format
+
+### Raw Message Dictionary
+```python
+{
+    'index': 1,              # Message index in storage
+    'storage': 'SM',         # Storage location (SM/ME)
+    'pdu': '07915...',       # Raw PDU data
+    'decoded': {             # Decoded message data
+        'sender': '+1234567890',
+        'timestamp': '2025/08/21 23:35:05 GMT+08:00',
+        'message': 'Hello World',
+        'reference': 202,    # Present for multipart SMS
+        'part': 1,           # Part number (1-based)
+        'total': 3           # Total parts
+    }
+}
+```
+
+### Assembled Message Types
+- **single**: Regular SMS message
+- **multipart**: Complete assembled message from multiple parts  
+- **incomplete**: Multipart message missing some parts
+
+## Modem Compatibility
+
+### Tested Modems
+- ✅ **RM520N-GL** - Full support including factory reset
+- ✅ **RM500U** - Basic SMS functionality
+- ⚠️ **Other Quectel modems** - Should work with basic features
+
+### AT Commands Used
+- `AT+CMGF` - Set SMS format (PDU/Text mode)
+- `AT+CMGS` - Send SMS
+- `AT+CMGL` - List SMS messages
+- `AT+CMGD` - Delete SMS messages
+- `AT+CPMS` - Set/query SMS storage
+- `AT+CUSD` - Send USSD commands
+- `AT+QCFG="ResetFactory"` - Factory reset (RM520N-GL)
+
+## Troubleshooting
+
+### Common Issues
+
+**"No response from modem"**
+- Check device path (`ls /dev/ttyUSB*`)
+- Verify modem is not being used by another process
+- Try different baudrate with `-b` option
+
+**"Permission denied"**
+- Add user to dialout group: `sudo usermod -a -G dialout $USER`
+- Or run with sudo (not recommended)
+
+**"Cannot decode SMS"**
+- Enable debug mode with `-D` to see raw PDU data
+- Some messages may use unsupported encoding
+
+**Multipart SMS not assembling**
+- Use `-A` flag for assembly
+- Check that all parts were received
+- Debug with `-D` to see reference numbers
+
+### Debug Mode
+```bash
+# Enable debug to see AT commands and responses
+python3 pysms_tool.py -d /dev/ttyUSB2 -D recv
+```
 
 ## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+1. Fork the repository
+2. Create feature branch
+3. Add tests for new functionality
+4. Submit pull request
 
 ## License
-For open source projects, say how it is licensed.
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+MIT License - See LICENSE file for details
+
+## Credits
+
+Based on the C implementation by Cezary Jackiewicz and lovewilliam. Rewritten in Python with additional features and RM520N-GL support.

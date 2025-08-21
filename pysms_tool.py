@@ -46,6 +46,12 @@ EXAMPLES:
     # Receive messages in JSON format
     python3 sms_tool_python.py -d /dev/ttyUSB2 -j recv
     
+    # Receive and assemble multipart messages
+    python3 sms_tool_python.py -d /dev/ttyUSB2 -A recv
+    
+    # Fetch from both SIM and modem storage, delete after
+    python3 sms_tool_python.py -d /dev/ttyUSB2 --all-storage --delete-after recv
+    
     # Check storage status
     python3 sms_tool_python.py -d /dev/ttyUSB2 status
     
@@ -544,92 +550,261 @@ class SMSTool:
         finally:
             self._close_serial()
     
-    def receive_sms(self, json_output: bool = False, raw_output: bool = False) -> bool:
-        """Receive SMS messages"""
+    def _get_messages_from_storage(self, storage_type: str, delete_after: bool = False) -> List[Dict]:
+        """Internal method to get messages from specific storage"""
+        # Set storage
+        self._send_command(f'AT+CPMS="{storage_type}"')
+        
+        # Set PDU mode
+        self._send_command("AT+CMGF=0")
+        
+        # List all messages
+        cmd = "AT+CMGL=4"
+        if self.debug:
+            print(f"\033[44m[SEND] {cmd}\033[0m", file=sys.stderr)
+        self.serial_port.write((cmd + "\r\n").encode())
+        
+        messages = []
+        current_msg = None
+        
+        responses = self._wait_for_response(10)
+        
+        for response in responses:
+            if response.startswith('+CMGL:'):
+                # Parse message header
+                match = re.match(r'\+CMGL:\s*(\d+),', response)
+                if match:
+                    if current_msg:
+                        messages.append(current_msg)
+                    current_msg = {'index': int(match.group(1)), 'storage': storage_type}
+            elif current_msg and response and not response in ('OK', 'ERROR'):
+                # This should be the PDU data
+                current_msg['pdu'] = response
+        
+        if current_msg:
+            messages.append(current_msg)
+        
+        # Decode all messages
+        for msg in messages:
+            msg['decoded'] = PDUDecoder.decode_pdu(msg['pdu'])
+        
+        # Delete messages if requested
+        if delete_after:
+            for msg in messages:
+                cmd = f"AT+CMGD={msg['index']}"
+                if self.debug:
+                    print(f"\033[44m[SEND] {cmd}\033[0m", file=sys.stderr)
+                self.serial_port.write((cmd + "\r\n").encode())
+                self._wait_for_response()
+        
+        return messages
+
+    def get_all_messages(self, storage_types: List[str] = None, delete_after: bool = False) -> List[Dict]:
+        """Get all messages from specified storage types"""
+        if storage_types is None:
+            storage_types = ["SM", "ME"]
+        
+        all_messages = []
         self._open_serial()
         try:
-            # Set storage if specified
-            if self.storage:
-                self._send_command(f'AT+CPMS="{self.storage}"')
-            
-            # Set PDU mode
-            self._send_command("AT+CMGF=0")
-            
-            # List all messages
-            cmd = "AT+CMGL=4"
-            if self.debug:
-                print(f"\033[44m[SEND] {cmd}\033[0m", file=sys.stderr)
-            self.serial_port.write((cmd + "\r\n").encode())
-            
-            messages = []
-            current_msg = None
-            
-            responses = self._wait_for_response(10)
-            
-            for response in responses:
-                if response.startswith('+CMGL:'):
-                    # Parse message header
-                    match = re.match(r'\+CMGL:\s*(\d+),', response)
-                    if match:
-                        if current_msg:
-                            messages.append(current_msg)
-                        current_msg = {'index': int(match.group(1))}
-                elif current_msg and response and not response in ('OK', 'ERROR'):
-                    # This should be the PDU data
-                    current_msg['pdu'] = response
-            
-            if current_msg:
-                messages.append(current_msg)
-            
-            if json_output:
-                print('{"msg":[', end='')
-            
-            for i, msg in enumerate(messages):
-                if json_output and i > 0:
-                    print(',', end='')
-                
-                if json_output:
-                    print(f'{{"index":{msg["index"]},', end='')
-                else:
-                    print(f"MSG: {msg['index']}")
-                
-                if raw_output:
-                    if json_output:
-                        print(f'"content":"{msg["pdu"]}"}}', end='')
-                    else:
-                        print(msg['pdu'])
-                else:
-                    # Decode PDU
-                    decoded = PDUDecoder.decode_pdu(msg['pdu'])
-                    if json_output:
-                        sender = decoded['sender'].replace('"', '\\"')
-                        timestamp = decoded['timestamp'].replace('"', '\\"')
-                        content = decoded['message'].replace('"', '\\"')
-                        
-                        json_fields = [f'"sender":"{sender}"', f'"timestamp":"{timestamp}"', f'"content":"{content}"']
-                        
-                        # Add multipart SMS fields if present
-                        if 'reference' in decoded:
-                            json_fields.append(f'"reference":{decoded["reference"]}')
-                        if 'part' in decoded:
-                            json_fields.append(f'"part":{decoded["part"]}')
-                        if 'total' in decoded:
-                            json_fields.append(f'"total":{decoded["total"]}')
-                        
-                        print(','.join(json_fields) + '}', end='')
-                    else:
-                        print(f"From: {decoded['sender']}")
-                        print(f"Date/Time: {decoded['timestamp']}")
-                        print(decoded['message'])
-                        print()
-            
-            if json_output:
-                print(']}')
-            
-            return True
-            
+            for storage_type in storage_types:
+                try:
+                    messages = self._get_messages_from_storage(storage_type, delete_after)
+                    all_messages.extend(messages)
+                except Exception as e:
+                    if self.debug:
+                        print(f"Error accessing {storage_type}: {e}", file=sys.stderr)
+            return all_messages
         finally:
             self._close_serial()
+
+    def receive_sms(self, json_output: bool = False, raw_output: bool = False, storage_types: List[str] = None, delete_after: bool = False) -> bool:
+        """Receive SMS messages"""
+        if storage_types is None:
+            storage_types = [self.storage] if self.storage else ["SM", "ME"]
+        
+        all_messages = self.get_all_messages(storage_types, delete_after)
+        
+        if json_output:
+            print('{"msg":[', end='')
+        
+        for i, msg in enumerate(all_messages):
+            if json_output and i > 0:
+                print(',', end='')
+            
+            if json_output:
+                print(f'{{"index":{msg["index"]},', end='')
+            else:
+                print(f"MSG: {msg['index']} ({msg['storage']})")
+            
+            if raw_output:
+                if json_output:
+                    print(f'"content":"{msg["pdu"]}"}}', end='')
+                else:
+                    print(msg['pdu'])
+            else:
+                # Use decoded data
+                decoded = msg['decoded']
+                if json_output:
+                    sender = decoded['sender'].replace('"', '\\"')
+                    timestamp = decoded['timestamp'].replace('"', '\\"')
+                    content = decoded['message'].replace('"', '\\"')
+                    
+                    json_fields = [f'"sender":"{sender}"', f'"timestamp":"{timestamp}"', f'"content":"{content}"']
+                    
+                    # Add multipart SMS fields if present
+                    if 'reference' in decoded:
+                        json_fields.append(f'"reference":{decoded["reference"]}')
+                    if 'part' in decoded:
+                        json_fields.append(f'"part":{decoded["part"]}')
+                    if 'total' in decoded:
+                        json_fields.append(f'"total":{decoded["total"]}')
+                    
+                    print(','.join(json_fields) + '}', end='')
+                else:
+                    print(f"From: {decoded['sender']}")
+                    print(f"Date/Time: {decoded['timestamp']}")
+                    print(decoded['message'])
+                    print()
+        
+        if json_output:
+            print(']}')
+        
+        return True
+
+    def receive_sms_assembled(self, json_output: bool = False, storage_types: List[str] = None, delete_after: bool = False) -> bool:
+        """Receive SMS messages with multipart messages assembled"""
+        all_messages = self.get_all_messages(storage_types, delete_after)
+        
+        # Group multipart messages by sender and reference
+        multipart_groups = {}
+        single_messages = []
+        
+        for msg in all_messages:
+            decoded = msg['decoded']
+            if 'reference' in decoded and 'part' in decoded and 'total' in decoded:
+                # This is part of a multipart message
+                key = (decoded['sender'], decoded['reference'])
+                if key not in multipart_groups:
+                    multipart_groups[key] = {}
+                multipart_groups[key][decoded['part']] = {
+                    'content': decoded['message'],
+                    'timestamp': decoded['timestamp'],
+                    'total': decoded['total'],
+                    'index': msg['index'],
+                    'storage': msg['storage']
+                }
+            else:
+                # Single message
+                single_messages.append(msg)
+        
+        # Assemble multipart messages
+        assembled_messages = []
+        
+        # Add single messages
+        for msg in single_messages:
+            assembled_messages.append({
+                'type': 'single',
+                'index': msg['index'],
+                'storage': msg['storage'],
+                'sender': msg['decoded']['sender'],
+                'timestamp': msg['decoded']['timestamp'],
+                'content': msg['decoded']['message']
+            })
+        
+        # Add assembled multipart messages
+        for (sender, reference), parts in multipart_groups.items():
+            if not parts:
+                continue
+                
+            # Get total parts expected
+            total_parts = next(iter(parts.values()))['total']
+            
+            # Check if we have all parts
+            if len(parts) == total_parts:
+                # Assemble message in correct order
+                assembled_content = ""
+                earliest_timestamp = None
+                indices = []
+                storages = []
+                
+                for part_num in range(1, total_parts + 1):
+                    if part_num in parts:
+                        part_data = parts[part_num]
+                        assembled_content += part_data['content']
+                        indices.append(part_data['index'])
+                        storages.append(part_data['storage'])
+                        
+                        # Use earliest timestamp
+                        if earliest_timestamp is None or part_data['timestamp'] < earliest_timestamp:
+                            earliest_timestamp = part_data['timestamp']
+                
+                assembled_messages.append({
+                    'type': 'multipart',
+                    'indices': indices,
+                    'storages': storages,
+                    'sender': sender,
+                    'timestamp': earliest_timestamp,
+                    'content': assembled_content,
+                    'reference': reference,
+                    'total_parts': total_parts
+                })
+            else:
+                # Incomplete multipart message - add individual parts
+                for part_num, part_data in parts.items():
+                    assembled_messages.append({
+                        'type': 'incomplete_multipart',
+                        'index': part_data['index'],
+                        'storage': part_data['storage'],
+                        'sender': sender,
+                        'timestamp': part_data['timestamp'],
+                        'content': part_data['content'],
+                        'reference': reference,
+                        'part': part_num,
+                        'total_parts': part_data['total']
+                    })
+        
+        # Sort by timestamp
+        assembled_messages.sort(key=lambda x: x['timestamp'])
+        
+        # Output results
+        if json_output:
+            print('{"msg":[', end='')
+        
+        for i, msg in enumerate(assembled_messages):
+            if json_output and i > 0:
+                print(',', end='')
+            
+            if json_output:
+                sender = msg['sender'].replace('"', '\\"')
+                timestamp = msg['timestamp'].replace('"', '\\"')
+                content = msg['content'].replace('"', '\\"')
+                
+                if msg['type'] == 'single':
+                    print(f'{{"type":"single","index":{msg["index"]},"sender":"{sender}","timestamp":"{timestamp}","content":"{content}"}}', end='')
+                elif msg['type'] == 'multipart':
+                    indices_str = ','.join(map(str, msg['indices']))
+                    print(f'{{"type":"multipart","indices":[{indices_str}],"sender":"{sender}","timestamp":"{timestamp}","content":"{content}","reference":{msg["reference"]},"total_parts":{msg["total_parts"]}}}', end='')
+                else:  # incomplete_multipart
+                    print(f'{{"type":"incomplete","index":{msg["index"]},"sender":"{sender}","timestamp":"{timestamp}","content":"{content}","reference":{msg["reference"]},"part":{msg["part"]},"total_parts":{msg["total_parts"]}}}', end='')
+            else:
+                if msg['type'] == 'single':
+                    print(f"MSG: {msg['index']} ({msg['storage']})")
+                elif msg['type'] == 'multipart':
+                    indices_str = ','.join(map(str, msg['indices']))
+                    print(f"MSG: [{indices_str}] (Assembled from {msg['total_parts']} parts)")
+                else:  # incomplete_multipart
+                    print(f"MSG: {msg['index']} ({msg['storage']}) [Incomplete: part {msg['part']}/{msg['total_parts']}]")
+                
+                print(f"From: {msg['sender']}")
+                print(f"Date/Time: {msg['timestamp']}")
+                print(msg['content'])
+                print()
+        
+        if json_output:
+            print(']}')
+        
+        return True
     
     def delete_sms(self, index: str) -> bool:
         """Delete SMS message(s)"""
@@ -792,6 +967,9 @@ def main():
     parser.add_argument('-R', '--raw-input', action='store_true', help='Use raw input')
     parser.add_argument('-r', '--raw-output', action='store_true', help='Use raw output')
     parser.add_argument('-s', '--storage', default='', help='Preferred storage')
+    parser.add_argument('-A', '--assemble', action='store_true', help='Assemble multipart SMS messages')
+    parser.add_argument('--delete-after', action='store_true', help='Delete messages after fetching')
+    parser.add_argument('--all-storage', action='store_true', help='Fetch from both SIM (SM) and modem (ME) storage')
     
     parser.add_argument('command', help='Command: send, recv, delete, status, ussd, at, reset')
     parser.add_argument('args', nargs='*', help='Command arguments')
@@ -825,7 +1003,16 @@ def main():
             phone, message = args.args[0], args.args[1]
             success = sms_tool.send_sms(phone, message)
         elif args.command == 'recv':
-            success = sms_tool.receive_sms(args.json, args.raw_output)
+            storage_types = None
+            if args.all_storage:
+                storage_types = ["SM", "ME"]
+            elif args.storage:
+                storage_types = [args.storage]
+            
+            if args.assemble:
+                success = sms_tool.receive_sms_assembled(args.json, storage_types, args.delete_after)
+            else:
+                success = sms_tool.receive_sms(args.json, args.raw_output, storage_types, args.delete_after)
         elif args.command == 'delete':
             success = sms_tool.delete_sms(args.args[0])
         elif args.command == 'status':

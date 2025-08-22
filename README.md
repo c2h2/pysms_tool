@@ -56,12 +56,20 @@ python3 pysms_tool.py -d /dev/ttyUSB2 reset
 
 ```python
 from pysms_tool import SMSTool
+import serial
 
-# Create SMS tool instance
+# Method 1: Traditional device path (opens/closes serial port for each operation)
 sms = SMSTool(device="/dev/ttyUSB2", debug=True)
-
-# Send SMS
 sms.send_sms("+1234567890", "Hello from Python!")
+
+# Method 2: Use existing serial object (recommended for multiple operations)
+# This reduces serial port open/close overhead
+ser = serial.Serial("/dev/ttyUSB2", baudrate=115200, timeout=1)
+sms = SMSTool(serial_port=ser, debug=True)
+
+# Send multiple SMS without reopening port each time
+sms.send_sms("+1234567890", "First message")
+sms.send_sms("+0987654321", "Second message")
 
 # Get all messages from both SIM and modem storage
 messages = sms.get_all_messages(storage_types=["SM", "ME"])
@@ -75,6 +83,9 @@ for msg in messages:
 
 # Reset modem
 sms.reset_modem()
+
+# When using serial object, you manage the connection
+ser.close()  # Close when done
 ```
 
 ## Command Line Options
@@ -102,6 +113,42 @@ sms.reset_modem()
 | `ussd` | Send USSD code | `ussd "*100#"` |
 | `at` | Send raw AT command | `at "AT+CIMI"` |
 | `reset` | Factory reset RM520N-GL modem | `reset` |
+
+## Serial Object Interface
+
+The SMSTool class supports two ways to handle serial connections:
+
+### Method 1: Device Path (Traditional)
+```python
+sms = SMSTool(device="/dev/ttyUSB2")
+sms.send_sms("+1234567890", "Message")  # Opens and closes port
+sms.send_sms("+0987654321", "Another")  # Opens and closes port again
+```
+
+### Method 2: Serial Object (Recommended for Multiple Operations)
+```python
+import serial
+ser = serial.Serial("/dev/ttyUSB2", baudrate=115200, timeout=1)
+sms = SMSTool(serial_port=ser)
+
+# Multiple operations without port overhead
+sms.send_sms("+1234567890", "Message 1")
+sms.send_sms("+0987654321", "Message 2") 
+sms.receive_sms()
+sms.delete_sms("all")
+
+ser.close()  # You manage the connection lifecycle
+```
+
+### Benefits of Serial Object Interface:
+- ✅ **Reduced overhead**: No serial port open/close for each operation
+- ✅ **Better performance**: Especially when sending multiple SMS
+- ✅ **Connection reuse**: Single connection for multiple operations
+- ✅ **User control**: You manage when to open/close the connection
+
+### When to Use Each Method:
+- **Device Path**: Single operations, simple scripts
+- **Serial Object**: Multiple operations, performance-critical applications, long-running services
 
 ## Advanced Examples
 
@@ -146,8 +193,17 @@ python3 demo.py ussd "*100#"
 
 #### Constructor
 ```python
-SMSTool(device="/dev/ttyUSB0", baudrate=115200, debug=False, storage="", dateformat="%m/%d/%y %H:%M:%S", gsm_mode=False)
+SMSTool(device="/dev/ttyUSB0", baudrate=115200, debug=False, storage="", dateformat="%m/%d/%y %H:%M:%S", gsm_mode=False, serial_port=None)
 ```
+
+**Parameters:**
+- `device` (str, optional): TTY device path. Ignored if `serial_port` is provided.
+- `baudrate` (int): Serial baudrate. Ignored if `serial_port` is provided.
+- `debug` (bool): Enable debug mode with AT command logging.
+- `storage` (str): Preferred SMS storage type (SM/ME/MT).
+- `dateformat` (str): Date/time format string for display.
+- `gsm_mode` (bool): Use GSM 7-bit encoding instead of UCS2.
+- `serial_port` (serial.Serial, optional): Pre-configured serial object. If provided, reduces port open/close overhead.
 
 #### Methods
 

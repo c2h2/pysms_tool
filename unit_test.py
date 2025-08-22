@@ -19,11 +19,12 @@ from pysms_tool import SMSTool, PDUDecoder
 class MockSerial:
     """Mock serial port for testing"""
     
-    def __init__(self, responses=None):
+    def __init__(self, responses=None, port="/dev/mock"):
         self.is_open = True
         self.responses = responses or []
         self.response_index = 0
         self.sent_commands = []
+        self.port = port
         
     def write(self, data):
         """Mock write - record sent commands"""
@@ -38,6 +39,10 @@ class MockSerial:
             return (response + '\r\n').encode('utf-8')
         return b'\r\n'
     
+    def open(self):
+        """Mock open"""
+        self.is_open = True
+        
     def close(self):
         """Mock close"""
         self.is_open = False
@@ -317,6 +322,78 @@ class TestSMSTool(unittest.TestCase):
         self.assertEqual(len(delete_commands), 1)
         logging.info("Auto-delete functionality test passed")
         
+    def test_serial_object_interface(self):
+        """Test using serial object directly instead of device path"""
+        logging.info("Testing Serial Object Interface")
+        
+        # Create mock serial object
+        mock_responses = [
+            ['OK'],                    # AT+CMGF=1
+            ['OK'],                    # AT+CSCS="UCS2"
+            ['OK'],                    # AT+CSMP=17,167,0,25
+            ['>'],                     # AT+CMGS="..."
+            ['+CMGS: 789', 'OK']      # Message sent with ID 789
+        ]
+        
+        mock_serial = self.create_mock_responses(mock_responses)
+        
+        # Test with serial object directly
+        sms_tool_serial_obj = SMSTool(serial_port=mock_serial, debug=False)
+        
+        with patch('signal.alarm'):
+            result = sms_tool_serial_obj.send_sms("+1234567890", "Test with serial object")
+            
+        self.assertTrue(result)
+        self.assertTrue(sms_tool_serial_obj._external_serial)
+        logging.info(f"Serial object test passed - sent commands: {len(mock_serial.sent_commands)}")
+        
+        # Verify serial object wasn't closed
+        self.assertTrue(mock_serial.is_open)
+        logging.info("Serial object remains open after operation (correct behavior)")
+        
+    def test_mixed_usage(self):
+        """Test that both device path and serial object methods work"""
+        logging.info("Testing Mixed Usage (Device Path vs Serial Object)")
+        
+        # Test 1: Traditional device path method
+        mock_responses_1 = [
+            ['OK'],                    # AT+CMGF=1
+            ['OK'],                    # AT+CSCS="UCS2"
+            ['OK'],                    # AT+CSMP=17,167,0,25
+            ['>'],                     # AT+CMGS="..."
+            ['+CMGS: 111', 'OK']      # Message sent
+        ]
+        
+        mock_serial_1 = self.create_mock_responses(mock_responses_1)
+        
+        with patch('pysms_tool.serial.Serial', return_value=mock_serial_1), \
+             patch('signal.alarm'):
+            sms_tool_path = SMSTool(device="/dev/mock", debug=False)
+            result_1 = sms_tool_path.send_sms("+1111111111", "Test device path")
+            
+        self.assertTrue(result_1)
+        self.assertFalse(sms_tool_path._external_serial)
+        
+        # Test 2: Serial object method
+        mock_responses_2 = [
+            ['OK'],                    # AT+CMGF=1
+            ['OK'],                    # AT+CSCS="UCS2"
+            ['OK'],                    # AT+CSMP=17,167,0,25
+            ['>'],                     # AT+CMGS="..."
+            ['+CMGS: 222', 'OK']      # Message sent
+        ]
+        
+        mock_serial_2 = self.create_mock_responses(mock_responses_2)
+        
+        with patch('signal.alarm'):
+            sms_tool_obj = SMSTool(serial_port=mock_serial_2, debug=False)
+            result_2 = sms_tool_obj.send_sms("+2222222222", "Test serial object")
+            
+        self.assertTrue(result_2)
+        self.assertTrue(sms_tool_obj._external_serial)
+        
+        logging.info("Mixed usage test passed - both methods work correctly")
+        
     def test_pdu_decoder(self):
         """Test PDU decoding functionality"""
         logging.info("Testing PDU Decoder")
@@ -359,6 +436,8 @@ def run_simple_tests():
         ("Delete All SMS", test_instance.test_delete_sms_all),
         ("Receive After Delete", test_instance.test_receive_after_delete),
         ("Auto-Delete Feature", test_instance.test_receive_with_delete_after),
+        ("Serial Object Interface", test_instance.test_serial_object_interface),
+        ("Mixed Usage", test_instance.test_mixed_usage),
         ("PDU Decoder", test_instance.test_pdu_decoder)
     ]
     

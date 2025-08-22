@@ -364,16 +364,25 @@ class PDUDecoder:
 class SMSTool:
     """Main SMS tool class"""
     
-    def __init__(self, device: str = "/dev/ttyUSB0", baudrate: int = 115200, 
+    def __init__(self, device: Optional[str] = "/dev/ttyUSB0", baudrate: int = 115200, 
                  debug: bool = False, storage: str = "", dateformat: str = "%m/%d/%y %H:%M:%S",
-                 gsm_mode: bool = False):
+                 gsm_mode: bool = False, serial_port: Optional[serial.Serial] = None):
         self.device = device
         self.baudrate = baudrate
         self.debug = debug
         self.storage = storage
         self.dateformat = dateformat
         self.gsm_mode = gsm_mode
-        self.serial_port: Optional[serial.Serial] = None
+        
+        # If a serial port object is provided, use it directly
+        if serial_port is not None:
+            self.serial_port = serial_port
+            self._external_serial = True
+            # Override device path since we're using external serial
+            self.device = getattr(serial_port, 'port', 'external_serial')
+        else:
+            self.serial_port = None
+            self._external_serial = False
         
         # Set up signal handler for timeout
         signal.signal(signal.SIGALRM, self._timeout_handler)
@@ -385,6 +394,21 @@ class SMSTool:
     
     def _open_serial(self):
         """Open serial connection to modem"""
+        # If using external serial object, check if it's already open
+        if self._external_serial:
+            if self.serial_port and not self.serial_port.is_open:
+                try:
+                    self.serial_port.open()
+                    time.sleep(0.1)  # Allow port to stabilize
+                except Exception as e:
+                    print(f"Failed to open external serial port: {e}", file=sys.stderr)
+                    sys.exit(1)
+            elif not self.serial_port:
+                print("External serial port is None", file=sys.stderr)
+                sys.exit(1)
+            return
+        
+        # Original behavior for device path strings
         try:
             self.serial_port = serial.Serial(
                 port=self.device,
@@ -404,6 +428,11 @@ class SMSTool:
     
     def _close_serial(self):
         """Close serial connection"""
+        # Don't close external serial objects - let the caller manage them
+        if self._external_serial:
+            return
+        
+        # Original behavior for internally created serial connections
         if self.serial_port and self.serial_port.is_open:
             self.serial_port.close()
     

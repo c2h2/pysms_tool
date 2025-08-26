@@ -263,11 +263,37 @@ SMSTool(device="/dev/ttyUSB0", baudrate=115200, debug=False, storage="", datefor
 - **multipart**: Complete assembled message from multiple parts  
 - **incomplete**: Multipart message missing some parts
 
+## Running on Photonicat
+
+The Photonicat device provides built-in 5G modem support. Here are examples specific to Photonicat:
+
+```bash
+# Send SMS with debug output (Photonicat short code + international number)
+python3 pysms_tool.py -D send 18602000005 "+1234567890" "Hello World! 你好世界 🌍"
+
+# Receive messages in JSON format
+python3 pysms_tool.py -j recv
+
+# Check USSD balance (adjust code for your carrier)
+python3 pysms_tool.py ussd "*100#"
+
+# Send to both short code and international number
+python3 pysms_tool.py send 18602000005 "Short code message"
+python3 pysms_tool.py send "+1234567890" "International message"
+```
+
+### Photonicat Device Notes
+- Default device path is usually `/dev/ttyUSB2` or `/dev/ttyUSB0`
+- Supports both short codes (like `18602000005`) and international numbers
+- Built-in 5G modem provides reliable SMS functionality
+- No special configuration required beyond standard setup
+
 ## Modem Compatibility
 
 ### Tested Modems
 - ✅ **RM520N-GL** - Full support including factory reset
-- ✅ **RM500U** - Basic SMS functionality
+- ✅ **RM500U** - Basic SMS functionality  
+- ✅ **Photonicat built-in modem** - Full SMS support with short codes
 - ⚠️ **Other Quectel modems** - Should work with basic features
 
 ### AT Commands Used
@@ -307,12 +333,44 @@ SMSTool(device="/dev/ttyUSB0", baudrate=115200, debug=False, storage="", datefor
 python3 pysms_tool.py -d /dev/ttyUSB2 -D recv
 ```
 
+## Testing
+
+### Unit Tests
+
+Run the comprehensive test suite without requiring a real modem:
+
+```bash
+# Run all tests
+python3 unit_test.py
+
+# Run with verbose output
+python3 unit_test.py -v
+
+# Run specific test
+python3 -m unittest unit_test.TestSMSDecoding.test_multipart_assembly -v
+```
+
+The unit testing script (`unit_test.py`) provides:
+- ✅ **Mock serial interface** for testing without hardware
+- ✅ **SMS encoding/decoding tests** for various character sets
+- ✅ **Multipart SMS assembly tests** 
+- ✅ **PDU parsing validation**
+- ✅ **AT command response simulation**
+
+### Test Coverage
+- SMS sending with Unicode/emoji/CJK characters
+- SMS receiving and PDU decoding
+- Multipart SMS assembly and validation
+- Error handling and edge cases
+- Serial port interface testing
+
 ## Contributing
 
 1. Fork the repository
 2. Create feature branch
-3. Add tests for new functionality
-4. Submit pull request
+3. Add tests for new functionality using `unit_test.py`
+4. Run tests to ensure compatibility: `python3 unit_test.py`
+5. Submit pull request
 
 ## License
 

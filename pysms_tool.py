@@ -72,6 +72,7 @@ import re
 from datetime import datetime
 from typing import Optional, Tuple, List, Dict, Any
 
+SMS_MESSAGES_DELAY = 0.5
 
 class SMSCharset:
     GSM_7BIT = 0
@@ -335,7 +336,8 @@ class PDUDecoder:
         # SMSC length (0 for default)
         pdu.append(0x00)
         
-        # PDU type (SMS-SUBMIT)
+        # PDU type (SMS-SUBMIT with relative validity period)
+        # Binary: 00010001 -> 00010001 (keep same as C implementation)
         pdu.append(0x11)
         
         # Message reference (let network assign)
@@ -351,7 +353,10 @@ class PDUDecoder:
         # Data coding scheme (7-bit)
         pdu.append(0x00)
         
-        # User data length
+        # Validity period (relative format) - matches C implementation
+        pdu.append(0xB0)
+        
+        # User data length (in septets for 7-bit encoding)
         pdu.append(len(message))
         
         # User data (7-bit encoded)
@@ -376,6 +381,7 @@ class SMSTool:
         
         # If a serial port object is provided, use it directly
         if serial_port is not None:
+            print(f"\033[32mUsing provided serial port: {serial_port}\033[0m", file=sys.stderr)
             self.serial_port = serial_port
             self._external_serial = True
             # Override device path since we're using external serial
@@ -384,13 +390,37 @@ class SMSTool:
             self.serial_port = None
             self._external_serial = False
         
-        # Set up signal handler for timeout
-        signal.signal(signal.SIGALRM, self._timeout_handler)
+        # Set up signal handler for timeout only when running standalone
+        # When imported as a module, skip signal setup to avoid thread issues
+        if __name__ == '__main__':
+            signal.signal(signal.SIGALRM, self._timeout_handler)
     
     def _timeout_handler(self, signum, frame):
         """Handle timeout signal"""
-        print("No response from modem.", file=sys.stderr)
+        print("\033[31mNo response from modem.\033[0m", file=sys.stderr)
         sys.exit(2)
+    
+    def _send_command_with_sync(self, command: str, timeout: int = 5, expect_data_response: bool = False) -> List[str]:
+        """Send AT command with proper synchronization and return responses"""
+        # Clear buffers to prevent sync issues
+        try:
+            self.serial_port.reset_input_buffer() 
+            self.serial_port.reset_output_buffer()
+        except:
+            pass
+        
+        # Store command for echo tracking
+        self._last_command = command
+        
+        if self.debug:
+            print(f"\033[44m[SEND] {command}\033[0m", file=sys.stderr)
+        
+        self.serial_port.write((command + '\r\n').encode('utf-8'))
+        self.serial_port.flush()  # Force send immediately
+        
+        responses = self._wait_for_response(timeout)
+        
+        return responses
     
     def _open_serial(self):
         """Open serial connection to modem"""
@@ -399,31 +429,29 @@ class SMSTool:
             if self.serial_port and not self.serial_port.is_open:
                 try:
                     self.serial_port.open()
-                    time.sleep(0.1)  # Allow port to stabilize
                 except Exception as e:
-                    print(f"Failed to open external serial port: {e}", file=sys.stderr)
+                    print(f"\033[31mFailed to open external serial port: {e}\033[0m", file=sys.stderr)
                     sys.exit(1)
             elif not self.serial_port:
-                print("External serial port is None", file=sys.stderr)
+                print("\033[31mExternal serial port is None\033[0m", file=sys.stderr)
                 sys.exit(1)
             return
-        
         # Original behavior for device path strings
         try:
+            print(f"\033[32mEstablishing serial port: {self.device}\033[0m", file=sys.stderr)
             self.serial_port = serial.Serial(
                 port=self.device,
                 baudrate=self.baudrate,
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
-                timeout=1,
+                timeout=15,
                 xonxoff=False,
                 rtscts=False,
                 dsrdtr=False
             )
-            time.sleep(0.1)  # Allow port to stabilize
         except Exception as e:
-            print(f"Failed to open {self.device}: {e}", file=sys.stderr)
+            print(f"\033[31mFailed to open {self.device}: {e}\033[0m", file=sys.stderr)
             sys.exit(1)
     
     def _close_serial(self):
@@ -434,6 +462,7 @@ class SMSTool:
         
         # Original behavior for internally created serial connections
         if self.serial_port and self.serial_port.is_open:
+            print("\033[32mClosing serial port...\033[0m", file=sys.stderr)
             self.serial_port.close()
     
     def _send_command(self, command: str) -> str:
@@ -441,12 +470,20 @@ class SMSTool:
         if not self.serial_port:
             raise RuntimeError("Serial port not open")
         
+        # Clear buffers to prevent sync issues
+        try:
+            self.serial_port.reset_input_buffer()
+            self.serial_port.reset_output_buffer()
+        except:
+            pass
+        
         # Debug output for sent command with blue background
         if self.debug:
             print(f"\033[44m[SEND] {command}\033[0m", file=sys.stderr)
         
         self.serial_port.write((command + '\r\n').encode('utf-8'))
-        
+        self.serial_port.flush()  # Force send immediately
+
         response_lines = []
         while True:
             line = self.serial_port.readline().decode(errors='ignore').strip()
@@ -466,118 +503,315 @@ class SMSTool:
     
     def _wait_for_response(self, timeout: int = 5) -> List[str]:
         """Wait for response lines from modem"""
-        signal.alarm(timeout)
         responses = []
         
-        try:
-            while True:
-                line = self.serial_port.readline().decode(errors='ignore').strip()
-                if not line:
-                    continue
+        # Use signal timeout only when running standalone
+        if __name__ == '__main__':
+            signal.alarm(timeout)
+            try:
+                while True:
+                    line = self.serial_port.readline().decode(errors='ignore').strip()
+                    if not line:
+                        continue
+                    
+                    # Debug output for received response with yellow background
+                    if self.debug:
+                        print(f"\033[43m[RECV] {line}\033[0m", file=sys.stderr)
+                    
+                    responses.append(line)
+                    if line in ('OK', 'ERROR') or line.startswith('+CMS ERROR:') or line.startswith('+CME ERROR:'):
+                        break
+            finally:
+                signal.alarm(0)
+        else:
+            # When imported as module, use serial timeout instead of signals
+            original_timeout = self.serial_port.timeout
+            self.serial_port.timeout = max(timeout, original_timeout)
+            
+            try:
+                command_echoed = False
+                expected_echo = getattr(self, '_last_command', '').strip()
+                consecutive_empty = 0
                 
-                # Debug output for received response with yellow background
-                if self.debug:
-                    print(f"\033[43m[RECV] {line}\033[0m", file=sys.stderr)
-                
-                responses.append(line)
-                if line in ('OK', 'ERROR') or line.startswith('+CMS ERROR:') or line.startswith('+CME ERROR:'):
-                    break
-        finally:
-            signal.alarm(0)
+                while True:
+                    line = self.serial_port.readline().decode(errors='ignore').strip()
+                    if not line:
+                        consecutive_empty += 1
+                        # If we get too many empty lines in a row, break
+                        if consecutive_empty >= 3:
+                            break
+                        continue
+                    
+                    consecutive_empty = 0
+                    
+                    # Debug output for received response with yellow background  
+                    if self.debug:
+                        print(f"\033[43m[RECV] {line}\033[0m", file=sys.stderr)
+                    
+                    responses.append(line)
+                    
+                    # Check if this is the command echo
+                    if not command_echoed and expected_echo and line == expected_echo:
+                        command_echoed = True
+                        if self.debug:
+                            print(f"Command echo confirmed: {line}", file=sys.stderr)
+                        continue
+                    
+                    # Check for completion responses
+                    if line in ('OK', 'ERROR') or line.startswith('+CMS ERROR:') or line.startswith('+CME ERROR:'):
+                        if not command_echoed and expected_echo:
+                            if self.debug:
+                                print(f"WARNING: Got completion '{line}' without echo for '{expected_echo}'", file=sys.stderr)
+                        break
+            finally:
+                self.serial_port.timeout = original_timeout
         
         return responses
     
-    def send_sms(self, phone: str, message: str) -> bool:
-        """Send SMS message using UCS2 or GSM encoding"""
-        if self.gsm_mode:
+    def send_sms(self, phone: str, message: str, json_output: bool = False) -> bool:
+        """Send SMS message using PDU mode for short numbers or UCS2/GSM for regular numbers"""
+        # Auto-detect short numbers (<=6 digits) like 10001, 10086 for PDU mode
+        phone_digits = phone.lstrip('+').replace('-', '').replace(' ', '')
+        is_short_number = phone_digits.isdigit() and len(phone_digits) <= 6
+        
+        if self.debug:
+            mode_reason = f"short number ({len(phone_digits)} digits)" if is_short_number else "regular number"
+            print(f"Using {'PDU mode' if is_short_number else 'text mode'} for {mode_reason}", file=sys.stderr)
+        
+        self._open_serial()
+        try:
+            if is_short_number:
+                # Use PDU mode for short numbers
+                success, status_info = self._send_sms_pdu_mode(phone, message, json_output)
+            else:
+                # Use text mode for regular numbers (existing logic)
+                success, status_info = self._send_sms_text_mode(phone, message, json_output)
+            
+            # Output JSON status if requested
+            if json_output:
+                import json
+                print(json.dumps(status_info, indent=2))
+            
+            return success
+            
+        finally:
+            self._close_serial()
+
+    def _send_sms_pdu_mode(self, phone: str, message: str, json_output: bool = False) -> tuple[bool, dict]:
+        """Send SMS using PDU mode (CMGF=0) for short numbers"""
+        if self.debug:
+            print("Using PDU mode (CMGF=0) for short number", file=sys.stderr)
+        
+        # Initialize status info
+        status_info = {
+            "success": False,
+            "method": "PDU",
+            "phone": phone,
+            "message": message,
+            "error": None,
+            "message_id": None
+        }
+        
+        # Message length check for GSM 7-bit encoding (160 chars max)
+        if len(message) > 160:
+            status_info["error"] = f"SMS message too long: {len(message)} chars (max 160 for PDU mode)"
+            if not json_output:
+                print(f"\033[31mSMS message too long: {len(message)} chars (max 160 for PDU mode)\033[0m", file=sys.stderr)
+            return False, status_info
+        
+        # Check for non-ASCII characters
+        if any(ord(c) > 127 for c in message):
+            print("\033[33mWarning: Non-ASCII characters detected in PDU mode, may not display correctly\033[0m", file=sys.stderr)
+        
+        # Set PDU mode
+        self._send_command("AT+CMGF=0")
+        
+        # Generate PDU
+        try:
+            pdu_hex = PDUDecoder.encode_pdu(phone, message)
+            if self.debug:
+                print(f"Generated PDU: {pdu_hex}", file=sys.stderr)
+        except Exception as e:
+            status_info["error"] = f"Failed to encode PDU: {e}"
+            if not json_output:
+                print(f"\033[31mFailed to encode PDU: {e}\033[0m", file=sys.stderr)
+            return False, status_info
+        
+        # Calculate PDU length (excluding SMSC length byte and SMSC data)
+        pdu_bytes = bytes.fromhex(pdu_hex)
+        smsc_length = pdu_bytes[0]  # First byte is SMSC length
+        pdu_length = len(pdu_bytes) - 1 - smsc_length  # Exclude SMSC length byte and SMSC data
+        
+        # Send CMGS command with PDU length
+        cmd = f'AT+CMGS={pdu_length}'
+        if self.debug:
+            print(f"\033[44m[SEND] {cmd}\033[0m", file=sys.stderr)
+        self.serial_port.write((cmd + '\r\n').encode('utf-8'))
+        time.sleep(SMS_MESSAGES_DELAY)
+        
+        # Send PDU data with Ctrl-Z
+        if self.debug:
+            print(f"\033[44m[SEND] {pdu_hex}<CTRL-Z>\033[0m", file=sys.stderr)
+        self.serial_port.write((pdu_hex + '\x1A').encode('utf-8'))
+        
+        responses = self._wait_for_response()
+        
+        sms_sent = False
+        message_id = None
+        for response in responses:
+            if response.startswith('+CMGS:'):
+                message_id = response[7:].strip()
+                status_info["message_id"] = message_id
+                if not json_output:
+                    print(f"\033[32mSMS sent successfully via PDU mode: {message_id}\033[0m", file=sys.stderr)
+                sms_sent = True
+            elif response.startswith('+CMS ERROR:'):
+                status_info["error"] = f"SMS not sent, error code: {response[11:]}"
+                if not json_output:
+                    print(f"\033[31mSMS not sent, error code: {response[11:]}\033[0m", file=sys.stderr)
+                return False, status_info
+            elif response == 'ERROR':
+                status_info["error"] = "SMS not sent, command error"
+                if not json_output:
+                    print("\033[31mSMS not sent, command error\033[0m", file=sys.stderr)
+                return False, status_info
+            elif response == 'OK' and sms_sent:
+                # Final OK confirmation after successful SMS
+                status_info["success"] = True
+                return True, status_info
+        
+        status_info["success"] = sms_sent
+        return sms_sent, status_info
+
+    def _send_sms_text_mode(self, phone: str, message: str, json_output: bool = False) -> tuple[bool, dict]:
+        """Send SMS using text mode (CMGF=1) with UCS2 or GSM encoding"""
+        # Initialize status info
+        status_info = {
+            "success": False,
+            "method": "Text",
+            "encoding": None,
+            "phone": phone,
+            "message": message,
+            "error": None,
+            "message_id": None
+        }
+        
+        # Auto-detect encoding based on manual GSM mode setting
+        use_gsm = self.gsm_mode
+        status_info["encoding"] = "GSM 7-bit" if use_gsm else "UCS2"
+        
+        if self.debug:
+            encoding_reason = "manual GSM mode" if self.gsm_mode else "default UCS2"
+            print(f"Using {'GSM 7-bit' if use_gsm else 'UCS2'} encoding ({encoding_reason})", file=sys.stderr)
+        
+        if use_gsm:
             # GSM mode - ASCII only, 160 character limit
             if len(message) > 160:
-                print(f"SMS message too long: {len(message)} chars (max 160 for GSM)", file=sys.stderr)
-                return False
+                status_info["error"] = f"SMS message too long: {len(message)} chars (max 160 for GSM)"
+                if not json_output:
+                    print(f"\033[31mSMS message too long: {len(message)} chars (max 160 for GSM)\033[0m", file=sys.stderr)
+                return False, status_info
             
             # Check for non-ASCII characters
             if any(ord(c) > 127 for c in message):
-                print("Warning: Non-ASCII characters detected in GSM mode, may not display correctly", file=sys.stderr)
+                print("\033[33mWarning: Non-ASCII characters detected in GSM mode, may not display correctly\033[0m", file=sys.stderr)
         else:
             # UCS2 mode - check message length for UCS2 encoding
             try:
                 utf16_bytes = message.encode('utf-16be')
                 # SMS limit is 140 bytes for UCS2 (70 UTF-16 characters)
                 if len(utf16_bytes) > 140:
-                    print(f"SMS message too long: {len(utf16_bytes)} bytes (max 140 bytes for UCS2)", file=sys.stderr)
-                    return False
+                    status_info["error"] = f"SMS message too long: {len(utf16_bytes)} bytes (max 140 bytes for UCS2)"
+                    if not json_output:
+                        print(f"\033[31mSMS message too long: {len(utf16_bytes)} bytes (max 140 bytes for UCS2)\033[0m", file=sys.stderr)
+                    return False, status_info
             except UnicodeEncodeError:
-                print(f"Cannot encode message: {message}", file=sys.stderr)
-                return False
+                status_info["error"] = f"Cannot encode message: {message}"
+                if not json_output:
+                    print(f"\033[31mCannot encode message: {message}\033[0m", file=sys.stderr)
+                return False, status_info
         
-        self._open_serial()
-        try:
-            # Use text mode
-            self._send_command("AT+CMGF=1")
+        # Use text mode
+        self._send_command("AT+CMGF=1")
+        
+        if use_gsm:
+            # Set character set to GSM
+            self._send_command('AT+CSCS="GSM"')
             
-            if self.gsm_mode:
-                # Set character set to GSM
-                self._send_command('AT+CSCS="GSM"')
-                
-                # Send CMGS command with phone number
-                cmd = f'AT+CMGS="{phone}"'
-                if self.debug:
-                    print(f"\033[44m[SEND] {cmd}\033[0m", file=sys.stderr)
-                self.serial_port.write((cmd + '\r\n').encode('utf-8'))
-                time.sleep(1)
-                
-                # Send message with Ctrl-Z
-                if self.debug:
-                    print(f"\033[44m[SEND] {message}<CTRL-Z>\033[0m", file=sys.stderr)
-                self.serial_port.write((message + '\x1A').encode('utf-8'))
-            else:
-                # Set character set to UCS2
-                self._send_command('AT+CSCS="UCS2"')
-                
-                # Set SMS parameters for UCS2
-                self._send_command('AT+CSMP=17,167,0,25')
-                
-                # Encode phone number to UCS2
-                phone_ucs2 = ''.join(f'{ord(c):04X}' for c in phone)
-                
-                # Send CMGS command with UCS2 encoded phone number
-                cmd = f'AT+CMGS="{phone_ucs2}"'
-                if self.debug:
-                    print(f"\033[44m[SEND] {cmd}\033[0m", file=sys.stderr)
-                self.serial_port.write((cmd + '\r\n').encode('utf-8'))
-                time.sleep(1)
-                
-                # Encode message to UCS2/UTF-16BE (handle emojis with surrogate pairs)
-                try:
-                    # Encode to UTF-16BE and convert to hex string
-                    utf16_bytes = message.encode('utf-16be')
-                    message_ucs2 = utf16_bytes.hex().upper()
-                except UnicodeEncodeError:
-                    print(f"Cannot encode message to UCS2: {message}", file=sys.stderr)
-                    return False
-                
-                # Send UCS2 encoded message with Ctrl-Z
-                if self.debug:
-                    print(f"\033[44m[SEND] {message_ucs2}<CTRL-Z>\033[0m", file=sys.stderr)
-                self.serial_port.write((message_ucs2 + '\x1A').encode('utf-8'))
+            # Send CMGS command with phone number
+            cmd = f'AT+CMGS="{phone}"'
+            if self.debug:
+                print(f"\033[44m[SEND] {cmd}\033[0m", file=sys.stderr)
+            self.serial_port.write((cmd + '\r\n').encode('utf-8'))
+            time.sleep(SMS_MESSAGES_DELAY)
             
-            responses = self._wait_for_response()
+            # Send message with Ctrl-Z
+            if self.debug:
+                print(f"\033[44m[SEND] {message}<CTRL-Z>\033[0m", file=sys.stderr)
+            self.serial_port.write((message + '\x1A').encode('utf-8'))
+        else:
+            # Set character set to UCS2
+            self._send_command('AT+CSCS="UCS2"')
             
-            for response in responses:
-                if response.startswith('+CMGS:'):
-                    print(f"SMS sent successfully: {response[7:]}")
-                    return True
-                elif response.startswith('+CMS ERROR:'):
-                    print(f"SMS not sent, error code: {response[11:]}", file=sys.stderr)
-                    return False
-                elif response == 'ERROR':
-                    print("SMS not sent, command error", file=sys.stderr)
-                    return False
+            # Set SMS parameters for UCS2
+            self._send_command('AT+CSMP=17,167,0,25')
+
+            # Encode phone number to UCS2
+            phone_ucs2 = ''.join(f'{ord(c):04X}' for c in phone)
             
-            return False
+            # Send CMGS command with plain phone number (don't UCS2 encode phone numbers)
+            cmd = f'AT+CMGS="{phone_ucs2}"'
+            if self.debug:
+                print(f"\033[44m[SEND] {cmd}\033[0m", file=sys.stderr)
+            self.serial_port.write((cmd + '\r\n').encode('utf-8'))
+            time.sleep(SMS_MESSAGES_DELAY)
             
-        finally:
-            self._close_serial()
+            # Encode message to UCS2/UTF-16BE (handle emojis with surrogate pairs)
+            try:
+                # Encode to UTF-16BE and convert to hex string
+                utf16_bytes = message.encode('utf-16be')
+                message_ucs2 = utf16_bytes.hex().upper()
+            except UnicodeEncodeError:
+                status_info["error"] = f"Cannot encode message to UCS2: {message}"
+                if not json_output:
+                    print(f"\033[31mCannot encode message to UCS2: {message}\033[0m", file=sys.stderr)
+                return False, status_info
+            
+            # Send UCS2 encoded message with Ctrl-Z
+            if self.debug:
+                print(f"\033[44m[SEND] {message_ucs2}<CTRL-Z>\033[0m", file=sys.stderr)
+            self.serial_port.write((message_ucs2 + '\x1A').encode('utf-8'))
+        
+        responses = self._wait_for_response()
+        
+        sms_sent = False
+        message_id = None
+        for response in responses:
+            if response.startswith('+CMGS:'):
+                message_id = response[7:].strip()
+                status_info["message_id"] = message_id
+                if not json_output:
+                    print(f"\033[32mSMS sent successfully: {message_id}\033[0m", file=sys.stderr)
+                sms_sent = True
+            elif response.startswith('+CMS ERROR:'):
+                status_info["error"] = f"SMS not sent, error code: {response[11:]}"
+                if not json_output:
+                    print(f"\033[31mSMS not sent, error code: {response[11:]}\033[0m", file=sys.stderr)
+                return False, status_info
+            elif response == 'ERROR':
+                status_info["error"] = "SMS not sent, command error"
+                if not json_output:
+                    print("\033[31mSMS not sent, command error\033[0m", file=sys.stderr)
+                return False, status_info
+            elif response == 'OK' and sms_sent:
+                # Final OK confirmation after successful SMS
+                status_info["success"] = True
+                return True, status_info
+        
+        # If we got here and SMS was marked as sent, return True
+        # Otherwise return False
+        status_info["success"] = sms_sent
+        return sms_sent, status_info
     
     def _get_messages_from_storage(self, storage_type: str, delete_after: bool = False) -> List[Dict]:
         """Internal method to get messages from specific storage"""
@@ -619,12 +853,33 @@ class SMSTool:
         
         # Delete messages if requested
         if delete_after:
+            print(f"Starting deletion of {len(messages)} messages from {storage_type} storage", file=sys.stderr)
             for msg in messages:
                 cmd = f"AT+CMGD={msg['index']}"
                 if self.debug:
                     print(f"\033[44m[SEND] {cmd}\033[0m", file=sys.stderr)
                 self.serial_port.write((cmd + "\r\n").encode())
-                self._wait_for_response()
+                
+                # Check deletion response
+                responses = self._wait_for_response()
+                deletion_success = False
+                for response in responses:
+                    if response == 'OK':
+                        deletion_success = True
+                        if self.debug:
+                            print(f"\033[32mSuccessfully deleted message {msg['index']} from {storage_type}\033[0m", file=sys.stderr)
+                        break
+                    elif response.startswith('+CMS ERROR:'):
+                        if self.debug:
+                            print(f"\033[31mError deleting message {msg['index']}: {response[11:]}\033[0m", file=sys.stderr)
+                        break
+                    elif response == 'ERROR':
+                        if self.debug:
+                            print(f"\033[31mError deleting message {msg['index']}: command error\033[0m", file=sys.stderr)
+                        break
+                
+                if not deletion_success and self.debug:
+                    print(f"\033[33mWarning: Failed to delete message {msg['index']} from {storage_type}\033[0m", file=sys.stderr)
         
         return messages
 
@@ -642,7 +897,7 @@ class SMSTool:
                     all_messages.extend(messages)
                 except Exception as e:
                     if self.debug:
-                        print(f"Error accessing {storage_type}: {e}", file=sys.stderr)
+                        print(f"\033[31mError accessing {storage_type}: {e}\033[0m", file=sys.stderr)
             return all_messages
         finally:
             self._close_serial()
@@ -840,12 +1095,36 @@ class SMSTool:
         self._open_serial()
         try:
             if index.lower() == 'all':
+                # Try efficient bulk delete first (delete all read messages)
+                print("Attempting bulk delete of all messages")
+                cmd = "AT+CMGD=1,4"  # Delete all messages regardless of status
+                if self.debug:
+                    print(f"\033[44m[SEND] {cmd}\033[0m", file=sys.stderr)
+                self.serial_port.write((cmd + "\r\n").encode())
+                responses = self._wait_for_response()
+                
+                bulk_delete_success = False
+                for response in responses:
+                    if response == 'OK':
+                        print("\033[32mBulk delete successful\033[0m")
+                        bulk_delete_success = True
+                        break
+                    elif response.startswith('+CMS ERROR:'):
+                        print(f"\033[33mBulk delete failed: {response[12:]}, falling back to individual delete\033[0m")
+                        break
+                
+                if bulk_delete_success:
+                    return True
+                    
+                # Fallback to individual deletion if bulk delete fails
+                print("Falling back to individual message deletion")
                 start_idx, end_idx = 0, 49
                 print(f"Delete msg from {start_idx} to {end_idx}")
             else:
                 start_idx = end_idx = int(index)
                 print(f"Delete msg from {start_idx} to {end_idx}")
             
+            deleted_count = 0
             for i in range(start_idx, end_idx + 1):
                 cmd = f"AT+CMGD={i}"
                 if self.debug:
@@ -855,11 +1134,17 @@ class SMSTool:
                 
                 for response in responses:
                     if response == 'OK':
-                        print(f"Deleted message {i}")
+                        deleted_count += 1
+                        if self.debug:
+                            print(f"Deleted message {i}")
                         break
                     elif response.startswith('+CMS ERROR:'):
-                        print(f"Error deleting message {i}: {response[12:]}")
+                        if self.debug:
+                            print(f"Error deleting message {i}: {response[12:]}")
                         break
+            
+            if index.lower() == 'all':
+                print(f"Individual deletion completed: {deleted_count} messages deleted")
             
             return True
             
@@ -914,7 +1199,7 @@ class SMSTool:
             
             for response in responses:
                 if response.startswith('+CME ERROR:'):
-                    print(f"Error: {response[12:]}", file=sys.stderr)
+                    print(f"\033[31mError: {response[12:]}\033[0m", file=sys.stderr)
                     return False
                 elif response.startswith('+CUSD:'):
                     # Parse USSD response (simplified)
@@ -935,9 +1220,22 @@ class SMSTool:
         """Send raw AT command"""
         self._open_serial()
         try:
+            # Clear buffers to prevent sync issues
+            try:
+                self.serial_port.reset_input_buffer()
+                self.serial_port.reset_output_buffer()
+            except:
+                pass
+            
+            # Store command for echo tracking
+            self._last_command = command
+            
             if self.debug:
                 print(f"\033[44m[SEND] {command}\033[0m", file=sys.stderr)
             self.serial_port.write((command + '\r\n').encode('utf-8'))
+            self.serial_port.flush()  # Force send immediately
+            
+  
             responses = self._wait_for_response()
             
             for response in responses:
@@ -970,10 +1268,10 @@ class SMSTool:
             
             for response in responses:
                 if response == 'OK':
-                    print("Modem reset successful")
+                    print("\033[32mModem reset successful\033[0m")
                     return True
                 elif response in ('ERROR', 'COMMAND NOT SUPPORT') or response.startswith('+CME ERROR:'):
-                    print(f"Modem reset failed: {response}", file=sys.stderr)
+                    print(f"\033[31mModem reset failed: {response}\033[0m", file=sys.stderr)
                     return False
                 else:
                     if self.debug:
@@ -986,19 +1284,22 @@ class SMSTool:
 
 
 def main():
+    version = "1.0.1"
     parser = argparse.ArgumentParser(
         add_help=False,
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        usage='''%(prog)s [options] send phoneNumber message
+        usage=f'''Photonicat SMS CLI Tool v{version}
+       %(prog)s [options] send phoneNumber message
        %(prog)s [options] recv
        %(prog)s [options] delete msg_index | all
        %(prog)s [options] status
        %(prog)s [options] ussd code
        %(prog)s [options] at command
        %(prog)s [options] reset
+       
 options:
         -b <baudrate> (default: 115200)
-        -d <tty device> (default: /dev/ttyUSB0)
+        -d <tty device> (default: /dev/ttyUSB3)
         -D debug (for ussd and at)
         -f <date/time format> (for sms/recv)
         -j json output (for sms/recv)
@@ -1012,7 +1313,7 @@ options:
         -h, --help show this help message''')
     
     parser.add_argument('-b', '--baudrate', type=int, default=115200, help=argparse.SUPPRESS)
-    parser.add_argument('-d', '--device', default='/dev/ttyUSB0', help=argparse.SUPPRESS)
+    parser.add_argument('-d', '--device', default='/dev/ttyUSB3', help=argparse.SUPPRESS)
     parser.add_argument('-D', '--debug', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('-f', '--dateformat', default='%m/%d/%y %H:%M:%S', help=argparse.SUPPRESS)
     parser.add_argument('-G', '--gsm-mode', action='store_true', help=argparse.SUPPRESS)
@@ -1060,7 +1361,7 @@ options:
     try:
         if args.command == 'send':
             phone, message = args.args[0], args.args[1]
-            success = sms_tool.send_sms(phone, message)
+            success = sms_tool.send_sms(phone, message, args.json)
         elif args.command == 'recv':
             storage_types = None
             if args.all_storage:
@@ -1088,10 +1389,10 @@ options:
         sys.exit(0 if success else 1)
         
     except KeyboardInterrupt:
-        print("\nOperation cancelled by user", file=sys.stderr)
+        print("\033[31m\nOperation cancelled by user\033[0m", file=sys.stderr)
         sys.exit(130)
     except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
+        print(f"\033[31mError: {e}\033[0m", file=sys.stderr)
         sys.exit(1)
 
 

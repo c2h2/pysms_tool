@@ -73,6 +73,7 @@ from datetime import datetime
 from typing import Optional, Tuple, List, Dict, Any
 
 SMS_MESSAGES_DELAY = 0.5
+SHORTNUMBER_LENGTH = 6
 
 class SMSCharset:
     GSM_7BIT = 0
@@ -95,25 +96,23 @@ class PDUDecoder:
             raise ValueError("SMS message too long")
         
         output = bytearray()
-        carry = 0
-        carry_bits = 0
+        bits = 0
+        bit_count = 0
         
         for char in text:
             char_code = ord(char) & 0x7F
+            bits |= (char_code << bit_count)
+            bit_count += 7
             
-            # Combine character with carry from previous iteration
-            byte_val = ((char_code << carry_bits) | carry) & 0xFF
-            output.append(byte_val)
-            
-            # Update carry for next iteration
-            carry = char_code >> (7 - carry_bits)
-            carry_bits += 1
-            
-            # If carry has accumulated 7 bits, it forms a complete character
-            if carry_bits == 7:
-                carry = 0
-                carry_bits = 0
-            
+            while bit_count >= 8:
+                output.append(bits & 0xFF)
+                bits >>= 8
+                bit_count -= 8
+        
+        # Add remaining bits if any
+        if bit_count > 0:
+            output.append(bits & 0xFF)
+        
         return bytes(output)
     
     @staticmethod
@@ -151,7 +150,13 @@ class PDUDecoder:
             ton_npi = 0x91  # International format
             phone = phone[1:]
         else:
-            ton_npi = 0x81  # Unknown format
+            # Check if it's a short number (<=SHORTNUMBER_LENGTH digits) - use National format
+            phone_digits = phone.replace('-', '').replace(' ', '')
+            if phone_digits.isdigit() and len(phone_digits) <= SHORTNUMBER_LENGTH:
+                ton_npi = 0xA1  # National format for short numbers
+            else:
+                #ton_npi = 0x81  # Unknown format for other numbers
+                ton_npi = 0xA1  #always use national format for other numbers
             
         # Pad with F if odd length
         if len(phone) % 2:
@@ -572,7 +577,7 @@ class SMSTool:
         """Send SMS message using PDU mode for short numbers or UCS2/GSM for regular numbers"""
         # Auto-detect short numbers (<=6 digits) like 10001, 10086 for PDU mode
         phone_digits = phone.lstrip('+').replace('-', '').replace(' ', '')
-        is_short_number = phone_digits.isdigit() and len(phone_digits) <= 6
+        is_short_number = phone_digits.isdigit() and len(phone_digits) <= SHORTNUMBER_LENGTH
         
         if self.debug:
             mode_reason = f"short number ({len(phone_digits)} digits)" if is_short_number else "regular number"
